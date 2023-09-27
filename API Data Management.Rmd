@@ -1,0 +1,349 @@
+---
+title: "Math 308: Managing API Data"
+author: "Laesch, Subbiah, Louchiem, Tantum"
+date: "Spring 2023"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r, setup, include=FALSE}
+require(mosaic)
+library(formatR)
+library(tidycensus)
+library(tidyverse)
+library(rvest)
+library(gridExtra)
+library(sf)
+knitr::opts_chunk$set(
+  tidy.opts=list(width.cutoff=80), 
+  tidy=TRUE)   # slightly smaller font for code
+```
+
+## Data Overview:
+
+1. Median Income by tract (Census, pulled) 
+2. Poverty rate of high school students by tract (Census, pulled)
+3. Median income by educational attainment level (Census, unpulled)  
+4. Open choice assignment by attendance areas (Seattle Schools Report, unpulled)  
+5. Median income by mobility (Census, pulled)  
+6. Achievement results by school/by demographic (USDoE, pulled)
+
+
+Generate API Key for Census Data Scraping:
+
+```{r, message=FALSE, warning = FALSE}
+census_api_key("3488cfc51ef04c9886a285b2a7c770d4dcff78f8")
+
+# To install API key for use in future sessions, run this function with `install = TRUE`
+```
+
+2010 Data: Median Income and Percent Under Poverty:
+
+```{r, message=FALSE, warning=FALSE}
+# acs1vars <- load_variables(year = 2010, dataset = "acs1") # Costly run time
+medianIncomeVar = c("B19013_001")
+
+# Median Household Income: 2006-2010 5-year ACS
+acs1 = get_acs(geography = "tract", variables = medianIncomeVar, state = "53", county = "033", year = 2010, geometry = TRUE)
+attach(acs1)
+
+# Read in list of Seattle block groups from SeattleGeoData
+seattletracts <- read.csv("~/R/MATH 308 Data/Census_Tracts_2010.csv")  %>%
+  pull("GEOID10") # Extracts a single column
+
+# Subset data to Seattle Tracts
+data10 <- acs1 %>%
+  filter(GEOID %in% seattletracts) # Keep rows that match a condition
+
+# Make Map (Change Estimate Scale)
+data10 %>%
+  ggplot(aes(fill = estimate)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c(option = "magma") +
+  ggtitle("King County By Median Household Income") +
+  labs(fill = "Income Amount\n(2010 Census)")
+
+seattleIndexGeoId <- read.csv("~/R/MATH 308 Data/Racial_and_Social_Equity_Composite_Index_Current.csv") %>%
+  pull("GEOID")
+
+dataTrial <- data10 %>%
+  filter(GEOID %in% seattleIndexGeoId) %>%
+  pull(GEOID)
+
+seattleIndex <- read.csv("~/R/MATH 308 Data/Racial_and_Social_Equity_Composite_Index_Current.csv")
+newIndex <- seattleIndex %>%
+  filter(GEOID %in% dataTrial) %>%
+  pull(SOCIOECON_DISADV_PERCENTILE)
+
+newData <- data10 %>%
+  filter(GEOID %in% seattleIndexGeoId)
+
+newData$Poverty_Rate <- newIndex
+
+
+newData %>%
+  ggplot(aes(fill = Poverty_Rate)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c(option = "magma") +
+  ggtitle("Percent Living under 200% Poverty in King County") +
+  labs(fill = "Poverty Rate\n(2010 Census)")
+```
+
+Faceted Mapping: 2010
+
+```{r, message=FALSE}
+# Median Income: Same house 1 year ago
+medianIncomeByMobility1 = c("B07011_002")
+# Median Income: Moved within the same county
+medianIncomeByMobility2 = c("B07011_003")
+# Median Income: Moved from a different county within the same state
+medianIncomeByMobility3 = c("B07011_004")
+# Median Income: Moved from a different state
+medianIncomeByMobility4 = c("B07011_005")
+
+# Median Household Income: 2006-2010 5-year ACS
+acsMob1 = get_acs(geography = "tract", variables = medianIncomeByMobility1, state = "53", county = "033", year = 2010, geometry = TRUE)
+attach(acsMob1)
+
+acsMob2 = get_acs(geography = "tract", variables = medianIncomeByMobility2, state = "53", county = "033", year = 2010, geometry = TRUE)
+attach(acsMob2)
+
+acsMob3 = get_acs(geography = "tract", variables = medianIncomeByMobility3, state = "53", county = "033", year = 2010, geometry = TRUE)
+attach(acsMob3)
+
+acsMob4 = get_acs(geography = "tract", variables = medianIncomeByMobility4, state = "53", county = "033", year = 2010, geometry = TRUE)
+attach(acsMob4)
+
+# Subset data to Seattle Tracts
+dataMob1 <- acsMob1 %>%
+  filter(GEOID %in% seattletracts) # Keep rows that match a condition
+dataMob2 <- acsMob2 %>%
+  filter(GEOID %in% seattletracts) # Keep rows that match a condition
+dataMob3 <- acsMob3 %>%
+  filter(GEOID %in% seattletracts) # Keep rows that match a condition
+dataMob4 <- acsMob4 %>%
+  filter(GEOID %in% seattletracts) # Keep rows that match a condition
+
+# Make Map (Change Estimate Scale)
+p1 <- dataMob1 %>% 
+  ggplot(aes(fill = estimate)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c() +
+  ggtitle("Household Income by Mobility", subtitle = "Same house as previous year\n") +
+  labs(fill = "Income Amount\n(2010 Census)")
+
+p2 <- dataMob2 %>% 
+  ggplot(aes(fill = estimate)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c() +
+  ggtitle("Household Income by Mobility", subtitle = "Moved within the same county\n") +
+  labs(fill = "Income Amount\n(2010 Census)")
+
+p3 <- dataMob3 %>% 
+  ggplot(aes(fill = estimate)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c() +
+  ggtitle("Household Income by Mobility", subtitle = "Moved within the same state\n") +
+  labs(fill = "Income Amount\n(2010 Census)")
+
+p4 <- dataMob4 %>% 
+  ggplot(aes(fill = estimate)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c() +
+  ggtitle("Household Income by Mobility", subtitle = "Moved from a different state\n") +
+  labs(fill = "Income Amount\n(2010 Census)")
+
+grid.arrange(p1, p2, p3, p4)
+```  
+Faceted Mapping: -- Scale is weird
+
+```{r, message=FALSE, error=FALSE, warning=FALSE}
+# Median Income: Same house 1 year ago
+medianIncomeByMobility1 = c("B07011_002")
+# Median Income: Moved within the same county
+medianIncomeByMobility2 = c("B07011_003")
+# Median Income: Moved from a different county within the same state
+medianIncomeByMobility3 = c("B07011_004")
+# Median Income: Moved from a different state
+medianIncomeByMobility4 = c("B07011_005")
+
+# Median Household Income: 2006-2010 5-year ACS
+acsMob1_15 = get_acs(geography = "tract", variables = medianIncomeByMobility1, state = "53", county = "033", year = 2015, geometry = TRUE)
+attach(acsMob1_15)
+
+acsMob2_15 = get_acs(geography = "tract", variables = medianIncomeByMobility2, state = "53", county = "033", year = 2015, geometry = TRUE)
+attach(acsMob2_15)
+
+acsMob3_15 = get_acs(geography = "tract", variables = medianIncomeByMobility3, state = "53", county = "033", year = 2015, geometry = TRUE)
+attach(acsMob3_15)
+
+acsMob4_15 = get_acs(geography = "tract", variables = medianIncomeByMobility4, state = "53", county = "033", year = 2015, geometry = TRUE)
+attach(acsMob4_15)
+
+# Subset data to Seattle Tracts
+dataMob1_15 <- acsMob1_15 %>%
+  filter(GEOID %in% seattletracts) # Keep rows that match a condition
+dataMob2_15 <- acsMob2_15 %>%
+  filter(GEOID %in% seattletracts) # Keep rows that match a condition
+dataMob3_15 <- acsMob3_15 %>%
+  filter(GEOID %in% seattletracts) # Keep rows that match a condition
+dataMob4_15 <- acsMob4_15 %>%
+  filter(GEOID %in% seattletracts) # Keep rows that match a condition
+
+# Make Map (Change Estimate Scale)
+d1 <- dataMob1_15 %>% 
+  ggplot(aes(fill = estimate)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c() +
+  ggtitle("Household Income by Mobility", subtitle = "Same house as previous year\n") +
+  labs(fill = "Income Amount\n(2015 Census)")
+
+d2 <- dataMob2_15 %>% 
+  ggplot(aes(fill = estimate)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c() +
+  ggtitle("Household Income by Mobility", subtitle = "Moved within the same county\n") +
+  labs(fill = "Income Amount\n(2015 Census)")
+
+d3 <- dataMob3_15 %>% 
+  ggplot(aes(fill = estimate)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c() +
+  ggtitle("Household Income by Mobility", subtitle = "Moved within the same state\n") +
+  labs(fill = "Income Amount\n(2015 Census)")
+
+d4 <- dataMob4_15 %>% 
+  ggplot(aes(fill = estimate)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c() +
+  ggtitle("Household Income by Mobility", subtitle = "Moved from a different state\n") +
+  labs(fill = "Income Amount\n(2015 Census)")
+
+grid.arrange(d1, d2, d3, d4)
+```  
+
+Comparing Changing Median Household Income for Long Term Residents:
+
+```{r, message=FALSE, error=FALSE, warning=FALSE}
+acsMob1_17 = get_acs(geography = "tract", variables = medianIncomeByMobility1, state = "53", county = "033", year = 2017, geometry = TRUE)
+attach(acsMob1_17)
+dataMob1_17 <- acsMob1_17 %>%
+  filter(GEOID %in% seattletracts)
+
+b1 <- dataMob1_17 %>% 
+  ggplot(aes(fill = estimate)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c() +
+  ggtitle("Household Income by Mobility", subtitle = "Same house as previous year\n") +
+  labs(fill = "Income Amount\n(2017 Census)")
+
+acsMob1_19 = get_acs(geography = "tract", variables = medianIncomeByMobility1, state = "53", county = "033", year = 2019, geometry = TRUE)
+attach(acsMob1_19)
+dataMob1_19 <- acsMob1_19 %>%
+  filter(GEOID %in% seattletracts)
+
+c1 <- dataMob1_19 %>% 
+  ggplot(aes(fill = estimate)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c() +
+  ggtitle("Household Income by Mobility", subtitle = "Same house as previous year\n") +
+  labs(fill = "Income Amount\n(2019 Census)")
+
+grid.arrange(p1, d1, b1, c1, widths = c(1.5,2))
+```
+
+Poverty Rates of High School Students:  
+
+```{r, message=FALSE, error=FALSE, warning=FALSE}
+# High School Enrollment: Above Poverty Line
+schoolPov1 = c("B14006_018")
+# High School Enrollment: Below Poverty Line  
+schoolPov2 = c("B14006_008")
+
+# High School Enrollment: Above Poverty Line: 2006-2010 5-year ACS
+acsSchoolPov1 = get_acs(geography = "tract", variables = schoolPov1, state = "53", county = "033", year = 2010, geometry = TRUE)
+attach(acsSchoolPov1)
+
+# High School Enrollment: Below Poverty Line
+acsSchoolPov2 = get_acs(geography = "tract", variables = schoolPov2, state = "53", county = "033", year = 2010, geometry = TRUE)
+attach(acsSchoolPov1)
+
+# Subset data to Seattle Tracts
+dataSPov1 <- acsSchoolPov1 %>%
+  filter(GEOID %in% seattletracts)
+dataSPov2 <- acsSchoolPov2 %>%
+  filter(GEOID %in% seattletracts)
+
+# Get population to calculate rates
+schoolPop = c("B14001_007")
+acsSchoolPop = get_acs(geography = "tract", variables = schoolPop, state = "53", county = "033", year = 2010, geometry = TRUE)
+attach(acsSchoolPop)
+dataSPop <- acsSchoolPop %>%
+  filter(GEOID %in% seattletracts)
+# Total enrollment
+vecPop <- dataSPop$estimate 
+# Above
+vecPov1 <- dataSPov1$estimate
+# Below
+vecPov2 <- dataSPov2$estimate
+# Rate Above
+vecRate1 <- (vecPov1 / vecPop)
+# Rate Below
+vecRate2 <- (vecPov2 / vecPop)
+dataSPov1$povRate <- vecRate1 * 100
+dataSPov2$povRate2 <- vecRate2 * 100
+
+# Make Maps
+g1 <- dataSPov1 %>% 
+  ggplot(aes(fill = povRate)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c() +
+  ggtitle("Poverty Rates of High School Students", subtitle = "Above Poverty Line\n") +
+  labs(fill = "Poverty Rate\n(2010 Census)")
+
+g2 <- dataSPov2 %>% 
+  ggplot(aes(fill = povRate2)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c() +
+  ggtitle("Poverty Rates of High School Students", subtitle = "Below Poverty Line\n") +
+  labs(fill = "Poverty Rate\n(2010 Census)")
+
+grid.arrange(g1, g2, nrow = 1)
+```
+
+Match Census tracts to districts:
+
+```{r}
+hsAttendanceZones <- read.csv("~/R/MATH 308 Data/High_School_Attendance_Areas_2022-2023.csv")
+attach(hsAttendanceZones)
+```
+
+Educational Attainment Level:
+
+```{r}
+# Idea: Compare categorical with quantitative (educational attainment level vs. median income) Estimate change in median income based on educational attainment level
+# Degree Level: 
+# Less than a high school graduate
+edcAttainment1 = c("S1501_C01_060E")
+# High school graduate or equivalent (GED)
+edcAttainment2 = c("S1501_C01_061E") 
+# Some college or associates degree
+edcAttainment3 = c("S1501_C01_062E") 
+# Bachelors degree
+edcAttainment4 = c("S1501_C01_063E") 
+# Graduate or professional degree
+edcAttainment5 = c("S1501_C01_064E") 
+
+# Metropolitan statistical area
+seattleCBSA = "42660"
+
+#seattleEarnings = get_acs(geography = "cbsa", variables = edcAttainment1, year = 2010, geometry = TRUE)
+#attach(seattleEarnings)
+```
+
+
+
+
+
+

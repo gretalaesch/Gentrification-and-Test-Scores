@@ -1,0 +1,312 @@
+---
+title: "Data Aggregation and Mapping"
+output: pdf_document
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(sf)
+library(tigris)
+library(tidyverse)
+library(tidycensus)
+library(ggplot2)
+library(gridExtra)
+```
+
+### Generate API Key for Census Data Scraping:
+
+```{r, message=FALSE, warning = FALSE}
+census_api_key("3488cfc51ef04c9886a285b2a7c770d4dcff78f8")
+# To install API key for use in future sessions, run this function with `install = TRUE`
+```
+
+## Reading in Data
+
+### Pull Census Data for Each Variable
+```{r, echo=TRUE, message=FALSE}
+# Median Income
+acs1 = get_acs(geography = "tract", variables = "B19013_001", state = "53", county = "033", year = 2014, geometry = TRUE)
+acs2 = get_acs(geography = "tract", variables = "B19013_001", state = "53", county = "033", year = 2019, geometry = TRUE)
+
+# School Population
+pop1 = get_acs(geography = "tract", variables = "B14001_007E", state = "53", county = "033", year = 2014, geometry = TRUE)
+pop2 = get_acs(geography = "tract", variables = "B14001_007E", state = "53", county = "033", year = 2019, geometry = TRUE)
+
+# Housing Value
+housing = get_acs(geography = "tract", variables = "B25077_001E", state = "53", county = "033", year = 2014, geometry = TRUE)
+housing2 = get_acs(geography = "tract", variables = "B25077_001E", state = "53", county = "033", year = 2019, geometry = TRUE)
+
+# College Moved
+collmove <- read_csv("~/R/MATH_308_Data/CollegeMoveIn.csv")
+
+# TODO: CREATE PIPE-LINE FOR MASTER DATA
+master_data <- read_csv("~/R/MATH_308_Data/master_data.csv")
+
+```
+
+### Extract Estimates
+```{r, echo=TRUE,message=FALSE}
+seattletracts <- read.csv("~/R/MATH_308_Data/Census_Tracts_2010.csv")  %>%
+  pull("GEOID10")
+
+# Filter to Seattle
+
+# Median Household Income
+income10 <- acs1 %>%
+  filter(GEOID %in% seattletracts)
+income14 <- acs2 %>%
+  filter(GEOID %in% seattletracts)
+# High School Age Population
+popul10 <- pop1 %>%
+  filter(GEOID %in% seattletracts)
+popul14 <- pop2 %>%
+  filter(GEOID %in% seattletracts)
+# Median Household Value
+housing10 <- housing %>% 
+  filter(GEOID %in% seattletracts)
+housing14 <- housing2 %>% 
+  filter(GEOID %in% seattletracts)
+
+# College-Educated Population Influx
+collmove <- read_csv("~/R/MATH_308_Data/CollegeMoveIn.csv")
+# Merge with dummy census data for geography
+dmmy_df <- data.frame(collmove$GEOID, collmove$Moved_in)
+colnames(dmmy_df)[1] = "GEOID"
+colnames(dmmy_df)[2] = "moved"
+collmove <- merge(income10, dmmy_df, by = "GEOID")
+
+gentr_2 <- read_csv("~/R/Math_308_Data/gentr_2.csv")
+
+# Gentrification Categorical
+# Merge with dummy census data for geography
+gentrified <- data.frame(gentr_2$GEOID, gentr_2$gentrified, gentr_2$gentrified_stud_pop14, gentr_2$stud_pop14)
+colnames(gentrified)[1] = "GEOID"
+colnames(gentrified)[2] = "yes"
+colnames(gentrified)[3] = "stud_eff"
+colnames(gentrified)[4] = "tot_student"
+gentrified$yes <- as.factor(gentrified$yes)
+gent_geo <- merge(income10, gentrified, by = "GEOID")
+
+# Tracts vs. School Districts Geography
+zones <- st_read("~/R/MATH_308_Data/High_School_Attendance_Areas_2022-2023.geojson")
+attach(zones)
+# Match coordinate systems
+zones <- st_transform(zones, st_crs(gent_geo))
+
+# PIPE-LINE FOR MASTER DATA
+big_data <- data.frame(income10$GEOID, income10$estimate, income14$estimate, housing10$estimate, housing14$estimate, collmove$moved, popul10$estimate, popul14$estimate, gentrified$yes, gentrified$stud_eff)
+colnames(big_data) <- c('GEOID','med_in10','med_in14','med_house10','med_house14', 'col_moved', 'stud_pop10', 'stud_pop14', 'gentrified', 'stud_gent')
+
+# write.csv(big_data, "/Users/Greta/Desktop/master_df_redo.csv", row.names=TRUE)
+```
+
+### Change from Tract Level to School District Level
+```{r, echo=TRUE,message=FALSE}
+df_list_gen <- list()
+
+# Specifically median income 
+for (i in 1 : nrow(zones)) {
+  gent_geo <- gent_geo %>%
+  mutate(tractarea = st_area(.))
+  
+  thiszone <- zones %>%
+    filter(HS_ZONE == HS_ZONE[i])
+  df_name <- paste(HS_ZONE[i], "Data Frame (Gen)")
+  # Make the intersection
+  intersectedzone <- thiszone %>%
+    st_intersection(gent_geo)
+  # Split tract area at school zone boundary 
+  zonearea <- intersectedzone %>%
+  mutate(intersectedarea = st_area(.)) %>%
+  mutate(weight = as.numeric(intersectedarea / tractarea)) %>%
+  mutate(pop_weighted = as.numeric(stud_eff * weight))
+  
+  assign(df_name, zonearea)
+  df_list_gen[[i]] <- zonearea
+}
+
+# Aggregate Gentrified Student Populations
+
+aggregate_df <- data.frame(zones$HS_ZONE)
+names(aggregate_df)[1] <- "HS_ZONE"
+
+s_gent_weighted <- c()
+
+for (i in 1 : length(df_list_gen)) {
+  weight_pop = sum(df_list_gen[[i]]$pop_weighted)
+  s_gent_weighted = append(s_gent_weighted, weight_pop)
+}
+
+aggregate_df <- cbind(aggregate_df, s_gent_weighted)
+
+# Aggregate Total Student Populations
+
+tot_pop <- c()
+
+for (i in 1 : length(df_list_gen)) {
+  stud = sum(df_list_gen[[i]]$tot_student)
+  tot_pop = append(tot_pop, stud)
+}
+
+aggregate_df <- cbind(aggregate_df, tot_pop)
+
+aggregate_df["stud_gen_perc"] <- (s_gent_weighted / tot_pop) * 100
+
+zones <- merge(zones, aggregate_df, by = "HS_ZONE")
+```
+
+### Response Variable
+```{r, echo=TRUE,message=FALSE}
+test_score <- read_csv("~/R/MATH_308_Data/change_in_test_score_data.csv")
+# Remove Missing Data
+test_score <- test_score[-3,]
+# Add a row of NAs for Lincoln
+test_score[nrow(test_score)+1,] <- NA
+test_score <- test_score[c(1,2,3,4,5,11,6,7,8,9,10),]
+test_score[[6,1]] <- "Lincoln"
+# Remove Extra Row of NAs
+test_score <- test_score[-11,]
+# Prepare to Merge with Gentrification Data
+test_score[,1] <- zones$HS_ZONE
+colnames(test_score)[1] <- "HS_ZONE"
+colnames(test_score)[6] <- "ecd_score_ch"
+colnames(test_score)[7] <- "all_score_ch"
+# Create Dummy Data Frame to Merge with Zones Data
+test_dummy <- data.frame(test_score$HS_ZONE, test_score$ecd_score_ch, test_score$all_score_ch)
+colnames(test_dummy)[1] <- "HS_ZONE"
+colnames(test_dummy)[2] <- "ecd_score_ch"
+colnames(test_dummy)[3] <- "all_score_ch"
+zones <- merge(zones, test_dummy, by = "HS_ZONE")
+# Data Frame For Graphing without Missing Data
+no_lincoln <- zones
+no_lincoln <- no_lincoln[-6,]
+no_lincoln["dif_score_ch"] <- (no_lincoln$all_score_ch - no_lincoln$ecd_score_ch)
+```
+
+
+### Mapping
+```{r, echo=TRUE}
+# Medium Household Income
+p1 <- income10 %>%
+  ggplot(aes(fill = estimate)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c(option = "magma") +
+  ggtitle("King County By Median \n Household Income") +
+  labs(fill = "Income Amount\n(2010-14 Census)")
+p2 <- income14 %>%
+  ggplot(aes(fill = estimate)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c(option = "magma") +
+  ggtitle("King County By Median \n Household Income") +
+  labs(fill = "Income Amount\n(2015-19 Census)")
+
+# Median Household Value
+p3 <- housing10 %>%
+  ggplot(aes(fill = estimate)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c(option = "magma") +
+  ggtitle("King County By Median Value of \n Owner-Occupied Households") +
+  labs(fill = "Household Value\n(2010-14 Census)")
+p4 <- housing14 %>%
+  ggplot(aes(fill = estimate)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c(option = "magma") +
+  ggtitle("King County By Median Value of \n  Owner-Occupied Households") +
+  labs(fill = "Household Value\n(2015-19 Census)")
+pdif <- housing14 %>%
+  ggplot(aes(fill = (housing14$estimate - housing10$estimate))) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c(option = "magma") +
+  ggtitle("Difference of Median Value of \n  Owner-Occupied Households") +
+  labs(fill = "Household Value\n Change")
+
+grid.arrange(p1, p2, p3, p4, nrow=2)
+
+# College Influx
+p5 <- collmove %>%
+  ggplot(aes(fill = moved)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c(option = "magma") +
+  ggtitle("Influx of College-Educated \n Population") +
+  labs(fill = "Population Moved\nBetween 2014-2019")
+
+# Gentrified Tracts
+p6 <- gent_geo %>%
+  ggplot(aes(fill = yes)) + 
+  geom_sf(color = "black") +
+  ggtitle("Seattle Gentrified Tracts") +
+  scale_fill_manual(values = c("white","grey70")) +
+  labs(fill = "1: Yes \n 0: No")
+
+# Students Gentrified by Tracts
+p7 <- gent_geo %>%
+  ggplot(aes(fill = (stud_eff))) + 
+  geom_sf(color = 'tan') + 
+  scale_fill_viridis_c(option = "rocket", direction = -1) +
+  ggtitle("Students Gentrified by Tracts \n") +
+  labs(fill = "Population of Students \n Gentrified") # change color scale so 0 is not black
+
+# School District Area vs Census Tract
+p8 <- gent_geo %>%
+  ggplot() +
+  geom_sf(color = "grey50", fill = NA) + 
+  geom_sf(data = zones, color = ("black"), fill = "steelblue1", alpha = .2) +
+  ggtitle("School District Area vs \n Census Tract")
+
+# Percent of Students Gentrified by School Zone
+p9 <- zones %>%
+  ggplot(aes(fill = stud_gen_perc)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c(option = "cividis", direction = -1, alpha = .7) +
+  ggtitle("Percentage of Students Gentrified \n by School Zone") +
+  labs(fill = "Percentage of Students Gentrified\nBetween 2014-2019")
+
+grid.arrange(p5, p6, p7, nrow = 2)
+p8
+p9
+``` 
+
+
+### Exploratory Data Analysis
+```{r, echo=TRUE}
+# Label each point individually for each school
+d1 <- ggplot(no_lincoln, aes(stud_gen_perc, ecd_score_ch)) + 
+  geom_point(color = "black")+ theme_bw() + 
+  ggtitle("Change in Test Scores for \n ECD Students over 10yr Period") +
+  labs("High School District") + 
+  xlab("Percent Students Gentrified within District") + 
+  ylab("Change in Test Score for ECD Students") + 
+  ylim(-35, 0)
+
+d2 <- ggplot(no_lincoln, aes(stud_gen_perc, all_score_ch)) + 
+  geom_point(color = "black")+ theme_bw() + 
+  ggtitle("Change in Test Scores for \n All Students over 10yr Period") +
+  labs("High School District") + 
+  xlab("Percent Students Gentrified within District") + 
+  ylab("Change in Test Score for All Students") + 
+  ylim(-35, 0)
+
+# Change: Positive Means ECD Decreases More compared to All Students
+d3 <- ggplot(no_lincoln, aes(stud_gen_perc, dif_score_ch)) + 
+  geom_point(color = "black")+ theme_bw() + 
+  ggtitle("Difference in Test Score Changes \n between ECD and Total Student Body") +
+  labs("High School District") + 
+  xlab("Percent Students Gentrified within District") + 
+  ylab("Change in Test Score for All Students")
+
+grid.arrange(d1,d2,nrow = 2)
+grid.arrange(d3, nrow = 1)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+

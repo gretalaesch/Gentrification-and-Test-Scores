@@ -1,0 +1,360 @@
+---
+title: "Shapefile Analysis"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(sf)
+library(tigris)
+library(tidyverse)
+library(tidycensus)
+library(ggplot2)
+```
+
+To-Do: Fix 15-19 student population
+
+### Generate API Key for Census Data Scraping:
+
+```{r, message=FALSE, warning = FALSE}
+census_api_key("3488cfc51ef04c9886a285b2a7c770d4dcff78f8")
+# To install API key for use in future sessions, run this function with `install = TRUE`
+```
+
+## Reading in Data
+
+### Median Income by Tracts
+
+```{r, message=FALSE, warning=FALSE}
+medianIncomeVar = c("B19013_001")
+
+# Median Household Income: 2006-2010 5-year ACS
+acs1 = get_acs(geography = "tract", variables = medianIncomeVar, state = "53", county = "033", year = 2014, geometry = TRUE)
+attach(acs1)
+acs2 = get_acs(geography = "tract", variables = medianIncomeVar, state = "53", county = "033", year = 2019, geometry = TRUE)
+attach(acs2)
+pop1 = get_acs(geography = "tract", variables = "B14001_007E", state = "53", county = "033", year = 2014, geometry = TRUE)
+attach(pop1)
+pop2 = get_acs(geography = "tract", variables = "B14001_007E", state = "53", county = "033", year = 2019, geometry = TRUE)
+attach(pop2)
+
+
+# Read in list of Seattle block groups from SeattleGeoData
+seattletracts <- read.csv("~/R/MATH_308_Data/Census_Tracts_2010.csv")  %>%
+  pull("GEOID10") # Extracts a single column
+
+# Subset data to Seattle Tracts
+data10 <- acs1 %>%
+  filter(GEOID %in% seattletracts) # Keep rows that match a condition
+data14 <- acs2 %>%
+  filter(GEOID %in% seattletracts)
+data10p <- pop1 %>%
+  filter(GEOID %in% seattletracts)
+data10p <- data10p[-135,]
+data14p <- pop2 %>%
+  filter(GEOID %in% seattletracts)
+data14p <- data14p[-135,]
+
+master_data <- read_csv("~/Desktop/master_data.csv")
+geo_guide <- data10 # Use census data for geography
+geo_guide[8] <- master_data$house_price_med0914
+
+to_check <- geo_guide$GEOID
+cont_vect <- master_data$GEOID
+missing <- c()
+for (i in 1:135) {
+  if (!(to_check[i] %in% cont_vect)) {
+    append(missing, to_check[i])
+  }
+}
+missing
+
+```
+
+### Maps and Visualization
+
+```{r}
+# Medium Household Income
+p1 <- data10 %>%
+  ggplot(aes(fill = estimate)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c(option = "magma") +
+  ggtitle("King County By Median Household Income") +
+  labs(fill = "Income Amount\n(2014 Census)")
+p2 <- data14 %>%
+  ggplot(aes(fill = estimate)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c(option = "magma") +
+  ggtitle("King County By Median Household Income") +
+  labs(fill = "Income Amount\n(2019 Census)")
+
+# Tracts vs. School Districts
+zones <- st_read("~/R/MATH_308_Data/High_School_Attendance_Areas_2022-2023.geojson")
+attach(zones)
+# Match coordinate systems
+zones <- st_transform(zones, st_crs(data10))
+
+p3 <- data10 %>%
+  ggplot() +
+  geom_sf(color = "grey50", fill = NA) + 
+  geom_sf(data = zones, color = ("hotpink"), fill = "white", alpha = .3) +
+  ggtitle("School District Area vs \n Census Tract")
+
+# Median Value of Owner-Occupied Housing Units
+p4 <- data14 %>%
+  ggplot(aes(fill = estimate)) + 
+  geom_sf(color = NA) + 
+  scale_fill_viridis_c(option = "magma") +
+  ggtitle("King County By Median Household Income") +
+  labs(fill = "Income Amount\n(2019 Census)")
+```
+
+## Manage Data
+
+### Median Household Income by School District (2010-2014)
+
+```{r}
+# Match coordinate systems
+crs1 <- st_crs(zones)
+crs2 <- st_crs(data10)
+zones <- st_transform(zones, st_crs(data10))
+
+
+df_list_acs1 <- list()
+
+# Specifically median income 
+for (i in 1 : nrow(zones)) {
+  data10 <- data10 %>%
+  mutate(tractarea = st_area(.))
+  
+  thiszone <- zones %>%
+    filter(HS_ZONE == HS_ZONE[i])
+  df_name <- paste(HS_ZONE[i], "Data Frame")
+  # Make the intersection
+  intersectedzone <- thiszone %>%
+    st_intersection(data10)
+  # Split tract area at school zone boundary 
+  zonearea <- intersectedzone %>%
+  mutate(intersectedarea = st_area(.)) %>%
+  mutate(weight = as.numeric(intersectedarea / tractarea)) %>%
+  mutate(estimate_weighted = as.numeric(estimate * weight))
+  
+  assign(df_name, zonearea)
+  df_list_acs1[[i]] <- zonearea
+}
+
+```
+
+### Median Household Income by School District (2014-2019)
+
+```{r}
+
+# Match coordinate systems
+crs1 <- st_crs(zones)
+crs2 <- st_crs(data14)
+zones <- st_transform(zones, st_crs(data14))
+
+
+df_list_acs2 <- list()
+
+# Specifically median income 
+for (i in 1 : nrow(zones)) {
+  data14 <- data14 %>%
+  mutate(tractarea = st_area(.))
+  
+  thiszone <- zones %>%
+    filter(HS_ZONE == HS_ZONE[i])
+  df_name <- paste(HS_ZONE[i], "Data Frame (2)")
+  # Make the intersection
+  intersectedzone <- thiszone %>%
+    st_intersection(data14)
+  # Split tract area at school zone boundary 
+  zonearea <- intersectedzone %>%
+  mutate(intersectedarea = st_area(.)) %>%
+  mutate(weight = as.numeric(intersectedarea / tractarea)) %>%
+  mutate(estimate_weighted = as.numeric(estimate * weight))
+  
+  assign(df_name, zonearea)
+  df_list_acs2[[i]] <- zonearea
+}
+
+```
+
+### Population of School Age Children by School District (2010-2014)
+
+```{r}
+
+# Match coordinate systems
+crs1 <- st_crs(zones)
+crs2 <- st_crs(data10p)
+zones <- st_transform(zones, st_crs(data10p))
+
+
+df_list_pop1 <- list()
+
+# Specifically median income 
+for (i in 1 : nrow(zones)) {
+  data10p <- data10p %>%
+  mutate(tractarea = st_area(.))
+  
+  thiszone <- zones %>%
+    filter(HS_ZONE == HS_ZONE[i])
+  df_name <- paste(HS_ZONE[i], "Data Frame (3)")
+  # Make the intersection
+  intersectedzone <- thiszone %>%
+    st_intersection(data10p)
+  # Split tract area at school zone boundary 
+  zonearea <- intersectedzone %>%
+  mutate(intersectedarea = st_area(.)) %>%
+  mutate(weight = as.numeric(intersectedarea / tractarea)) %>%
+  mutate(estimate_weighted = as.numeric(estimate * weight))
+  
+  assign(df_name, zonearea)
+  df_list_pop1[[i]] <- zonearea
+}
+
+```
+
+### Population of School Age Children by School District (2014-2019)
+
+```{r}
+
+# Match coordinate systems
+crs1 <- st_crs(zones)
+crs2 <- st_crs(data14p)
+zones <- st_transform(zones, st_crs(data14p))
+
+
+df_list_pop2 <- list()
+
+# Specifically median income 
+for (i in 1 : nrow(zones)) {
+  data14p <- data14p %>%
+  mutate(tractarea = st_area(.))
+  
+  thiszone <- zones %>%
+    filter(HS_ZONE == HS_ZONE[i])
+  df_name <- paste(HS_ZONE[i], "Data Frame (4)")
+  # Make the intersection
+  intersectedzone <- thiszone %>%
+    st_intersection(data14p)
+  # Split tract area at school zone boundary 
+  zonearea <- intersectedzone %>%
+  mutate(intersectedarea = st_area(.)) %>%
+  mutate(weight = as.numeric(intersectedarea / tractarea)) %>%
+  mutate(estimate_weighted = as.numeric(estimate * weight))
+  
+  assign(df_name, zonearea)
+  df_list_pop2[[i]] <- zonearea
+}
+
+```
+
+### Median Value of Owner Occupied Houses
+
+```{r}
+housing["price_dif"] -> (housing2$estimate - housing$estimate)
+
+
+
+# Match coordinate systems
+crs1 <- st_crs(zones)
+crs2 <- st_crs(data14p)
+zones <- st_transform(zones, st_crs(data14p))
+
+
+df_list_pop2 <- list()
+
+# Specifically median income 
+for (i in 1 : nrow(zones)) {
+  data14p <- data14p %>%
+  mutate(tractarea = st_area(.))
+  
+  thiszone <- zones %>%
+    filter(HS_ZONE == HS_ZONE[i])
+  df_name <- paste(HS_ZONE[i], "Data Frame (4)")
+  # Make the intersection
+  intersectedzone <- thiszone %>%
+    st_intersection(data14p)
+  # Split tract area at school zone boundary 
+  zonearea <- intersectedzone %>%
+  mutate(intersectedarea = st_area(.)) %>%
+  mutate(weight = as.numeric(intersectedarea / tractarea)) %>%
+  mutate(estimate_weighted = as.numeric(estimate * weight))
+  
+  assign(df_name, zonearea)
+  df_list_pop2[[i]] <- zonearea
+}
+
+```
+
+### Create Weighted Averages of Median Incomes by Population Density
+
+```{r}
+# Aggregate census statistics by school zone for all variables
+# make a data fram with rows for each school district, add a column for weighted average of median income for each district
+master_df <- data.frame(zones$HS_ZONE)
+names(master_df)[1] <- "HS_ZONE"
+
+med_av201014 <- c()
+
+for (i in 1 : length(df_list_acs1)) {
+  tot_value = sum(df_list_acs1[[i]]$estimate_weighted))
+  med_av201014 = append(med_av201014, av_value)
+}
+master_df <- cbind(master_df, med_av201014)
+
+med_av201419 <- c()
+
+for (i in 1 : length(df_list_acs2)) {
+  av_value = sum(df_list_acs2[[i]]$estimate_weighted) / nrow(df_list_acs2[[i]])
+  med_av201419 = append(med_av201419, av_value)
+}
+master_df <- cbind(master_df, med_av201419)
+
+pop_201014 <- c()
+
+for (i in 1 : length(df_list_pop1)) {
+  av_value = sum(df_list_pop1[[i]]$estimate_weighted) / nrow(df_list_pop1[[i]])
+  pop_201014 = append(pop_201014, av_value)
+}
+master_df <- cbind(master_df, pop_201014)
+
+pop_201419 <- c()
+
+for (i in 1 : length(df_list_pop2)) {
+  av_value = sum(df_list_pop2[[i]]$estimate_weighted) / nrow(df_list_pop2[[i]])
+  pop_201419 = append(pop_201419, av_value)
+}
+master_df <- cbind(master_df, pop_201419)
+
+```
+
+# Median Household Value by Tract
+
+```{r}
+house_prices = c("B25077")
+
+housing = get_acs(geography = "tract", variables = "B25077_001E", state = "53", county = "033", year = 2014, geometry = TRUE)
+
+# Filter to Seattle
+housing <- housing %>% 
+  filter(GEOID %in% merge_attempt$GEOID)
+
+to_merge <- data.frame(housing$GEOID, housing$estimate)
+merge_attempt <- merge(merge_attempt, to_merge, by = "GEOID")
+
+housing2 = get_acs(geography = "tract", variables = "B25077_001E", state = "53", county = "033", year = 2019, geometry = TRUE)
+
+# Filter to Seattle
+housing2 <- housing2 %>% 
+  filter(GEOID %in% merge_attempt$GEOID)
+
+to_merge2 <- data.frame(housing2$GEOID, housing2$estimate)
+colnames(to_merge2)[1] = "GEOID"
+colnames(to_merge2)[2] = "house_price_med1519"
+
+merge_attempt <- merge(merge_attempt, to_merge2, by = "GEOID")
+
+write.csv(merge_attempt, "/Users/Greta/Desktop/master_df.csv", row.names=TRUE)
+```
